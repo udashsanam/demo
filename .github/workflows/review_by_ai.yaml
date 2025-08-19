@@ -7,15 +7,18 @@ on:
 jobs:
   pr-review:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
     steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
-
-      - name: Get PR diff
+      - name: Get PR diff via GitHub API
         id: diff
         run: |
-          git fetch origin ${{ github.base_ref }}
-          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.txt
+          curl -s \
+            -H "Accept: application/vnd.github.v3.diff" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            ${{ github.event.pull_request.url }} > pr_diff.txt
+
           echo "diff<<EOF" >> $GITHUB_OUTPUT
           cat pr_diff.txt >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -23,22 +26,29 @@ jobs:
       - name: Generate PR review with OpenAI
         id: review
         run: |
-          RESPONSE=$(curl https://api.openai.com/v1/chat/completions \
-            -s \
+          DIFF_CONTENT=$(cat pr_diff.txt | jq -Rs .)  # safely encode diff as JSON string
+
+          PAYLOAD=$(jq -n \
+            --arg title "${{ github.event.pull_request.title }}" \
+            --arg body "${{ github.event.pull_request.body }}" \
+            --arg diff "$DIFF_CONTENT" \
+            '{
+              model: "gpt-4o-mini",
+              messages: [
+                {role: "system", content: "You are a code reviewer. Review the PR diff and provide constructive feedback."},
+                {role: "user", content: ("PR Title: " + $title + "\n\nPR Body: " + $body + "\n\nDiff:\n" + $diff)}
+              ],
+              temperature: 0.3
+            }')
+              
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d "{
-              \"model\": \"gpt-4o-mini\",
-              \"messages\": [
-                {\"role\": \"system\", \"content\": \"You are a code reviewer. Review the PR diff and provide constructive feedback.\"},
-                {\"role\": \"user\", \"content\": \"PR Title: ${{ github.event.pull_request.title }}\n\nPR Body: ${{ github.event.pull_request.body }}\n\nDiff:\n${{ steps.diff.outputs.diff }}\"}
-              ],
-              \"temperature\": 0.3
-            }" | jq -r '.choices[0].message.content')
-
+            -d "$PAYLOAD" | jq -r '.choices[0].message.content')
+              
           echo "review=$RESPONSE" >> $GITHUB_OUTPUT
-
       - name: Post PR review as comment
+        if: ${{ steps.review.outputs.review != '' && steps.review.outputs.review != 'null' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
