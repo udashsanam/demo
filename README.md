@@ -1,6 +1,6 @@
 ![Release Workflow](https://github.com/prakashtamu/demo/actions/workflows/release.yaml/badge.svg)
 
-# React + Vite
+# React + Vite 
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
